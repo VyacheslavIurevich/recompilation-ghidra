@@ -7,6 +7,9 @@ Our goals:
 - Achieve recompilation.
 - Make decompiled C code more readable.
 
+## Project status
+In development.
+
 ## Install
 To install an official pre-built multi-platform Ghidra release:  
 * Install [JDK 21 64-bit][jdk]
@@ -56,6 +59,10 @@ gradle buildGhidra
 The compressed development build will be located at `build/dist/`.
 
 For more detailed information on building Ghidra, please read the [Developer Guide][devguide].
+
+## Team
+- Vyacheslav Kochergin. [GitHub](https://github.com/VyacheslavIurevich), [Contact](https://t.me/se4life).
+- Vasilii Sarapulov. [GitHub](https://github.com/Sarapulov-Vas), [Contact](https://t.me/sarpaulov).
 
 [devguide]: DevGuide.md
 [releases]: https://github.com/VyacheslavIurevich/recompilation-ghidra/releases
