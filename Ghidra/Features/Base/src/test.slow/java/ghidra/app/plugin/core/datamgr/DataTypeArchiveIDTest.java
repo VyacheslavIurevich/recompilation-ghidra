@@ -34,6 +34,7 @@ public class DataTypeArchiveIDTest extends AbstractGenericTest {
 
 	private static final String WIN_VS12_32_GDT_PATH = "typeinfo/win32/windows_vs12_32.gdt";
 	private static final String WIN_VS12_64_GDT_PATH = "typeinfo/win32/windows_vs12_64.gdt";
+	private static final String CLIB_86_64_LINUX_GDT_PATH = "typeinfo/clib/clib_gcc_x86_64-linux-gnu.gdt";
 	private static final String GENERIC_CLIB_32_GDT_PATH = "typeinfo/generic/generic_clib.gdt";
 	private static final String GENERIC_CLIB_64_GDT_PATH = "typeinfo/generic/generic_clib_64.gdt";
 	private static final String MAC_OS_10_9_GDT_PATH = "typeinfo/mac_10.9/mac_osx.gdt";
@@ -44,6 +45,7 @@ public class DataTypeArchiveIDTest extends AbstractGenericTest {
 			Map.entry(WIN_VS12_64_GDT_PATH, "3193696833254024484"),
 			Map.entry(GENERIC_CLIB_32_GDT_PATH, "2644097909188870631"),
 			Map.entry(GENERIC_CLIB_64_GDT_PATH, "3193699959493190971"),
+			Map.entry(CLIB_86_64_LINUX_GDT_PATH, "3628929508182069829"),
 			Map.entry(MAC_OS_10_9_GDT_PATH, "2650667045259492112"),
 			Map.entry("typeinfo/golang/golang_1.15_anybit_any.gdt", "3600806988729184131"),
 			Map.entry("typeinfo/golang/golang_1.16_anybit_any.gdt", "3597021567582750001"),
@@ -87,7 +89,6 @@ public class DataTypeArchiveIDTest extends AbstractGenericTest {
 
 	@Test
 	public void testArchiveIDMatch() {
-
 		Map<ResourceFile, String> currentGdts = getCurrentGdts();
 		Set<String> notFound = new HashSet<>(archiveIdMap.keySet());
 		for (ResourceFile gdtFile : currentGdts.keySet()) {
@@ -199,6 +200,22 @@ public class DataTypeArchiveIDTest extends AbstractGenericTest {
 			assertNotNull(dt);
 			assertEquals("3015963966244190568", dt.getUniversalID().toString());
 			verifyArchive(dt, MAC_OS_10_9_GDT_PATH);
+		}
+		finally {
+			dtm.close();
+		}
+	}
+	
+	@Test
+	public void spotCheckClib_86_64_linux() throws IOException {
+		ResourceFile gdtFile = Application.getModuleDataFile(CLIB_86_64_LINUX_GDT_PATH);
+		FileDataTypeManager dtm = FileDataTypeManager.openFileArchive(gdtFile, false);
+		assertEquals(ArchiveWarning.NONE, dtm.getWarning());
+		try {
+			DataType dt = dtm.getDataType("/sys/types.h/dev_t");
+			assertNotNull(dt);
+			assertEquals("3628930324523651661", dt.getUniversalID().toString());
+			verifyArchive(dt, CLIB_86_64_LINUX_GDT_PATH);
 		}
 		finally {
 			dtm.close();

@@ -17,6 +17,7 @@
 package ghidra.app.util.cparser.CPP;
 
 import java.util.*;
+import java.io.*;
 
 import ghidra.app.util.cparser.CPP.PreProcessor.PPToken;
 import ghidra.program.model.data.*;
@@ -278,18 +279,16 @@ public class DefineTable {
 	 */
 	private String macroSub(String image, int pos, ArrayList<String> initialList) {
 		int replaceCount = 0;
-
 		StringBuffer buf = new StringBuffer(image);
 		int lastReplPos = pos;
-		
+
 		boolean initialListSupplied = initialList != null;  // initial list passed in
 		ArrayList<String> sublist = new ArrayList<String>();
 		if (initialList != null) {
 			sublist.addAll(initialList);
 		}
 
-
-		// don't replace an infinite number of times.  Fail safe for possible ininite loop
+		// don't replace an infinite number of times.  Fail safe for possible infinite loop
 		while (pos < buf.length() && replaceCount < ARBITRARY_MAX_REPLACEMENTS) {
 			// clear list of used macros when move past replacement area
 			if (pos == lastReplPos) {
@@ -298,11 +297,11 @@ public class DefineTable {
 					sublist.addAll(initialList); // add back in initialList of nonreplacement names
 				}
 			}
+
 			String defName = getDefineAt(buf, pos);
 			if (shouldReplace(buf, defName, pos)) {
 				// stop recursion on the same replacement string
 				int replPos = replace(buf, defName, pos, sublist, initialListSupplied);
-
 				if (replPos == -1) {
 					// if no replacement string, move on
 					pos++;
@@ -320,6 +319,7 @@ public class DefineTable {
 		if (replaceCount >= ARBITRARY_MAX_REPLACEMENTS) {
 			System.err.println(" replace " + image + " hit limit");
 		}
+
 		return buf.toString();
 	}
 
@@ -338,6 +338,7 @@ public class DefineTable {
 			Character.isJavaIdentifierPart(buf.charAt(currIndex - 1)))) {
 			return false;
 		}
+
 		int afterIndex = currIndex + defName.length();
 		if (afterIndex < buf.length() && (Character.isJavaIdentifierStart(buf.charAt(afterIndex)) ||
 			Character.isJavaIdentifierPart(buf.charAt(afterIndex)))) {
@@ -397,7 +398,6 @@ public class DefineTable {
 			// there shouldn't be so many globals...
 			// could be screwed up by so many things
 			String parms = getParams(buf, currIndex + currKey.length(), (char) 0);
-
 			int parmslen = parms.length();
 			if (parmslen < 2) {
 				return -1;
@@ -508,7 +508,14 @@ public class DefineTable {
 
 				beginPos.add(insertLoc, begin);
 				endPos.add(insertLoc, Integer.valueOf(curpos + curArgName.length()));
-				subValue.add(insertLoc, argValue);
+				if (argValue.length() > 0 && argValue.startsWith("#"))
+				{
+					subValue.add(insertLoc, "\"" + argValue.substring(1) + "\"");
+				}
+				else
+				{
+					subValue.add(insertLoc, macroSub(argValue, 0, null));
+				}
 			}
 			while (curpos >= 0);
 		}
@@ -535,6 +542,10 @@ public class DefineTable {
 		}
 		
 		substString = buf.toString();
+		if (substString.length() > 0 && substString.charAt(0) == '#')
+		{
+			substString = "\"" + substString.substring(1) +"\"";
+		}
 		return substString;
 	}
 
@@ -646,9 +657,6 @@ public class DefineTable {
 		if (join) {
 			image = joinPdPd(image);
 		}
-		if (image.length() > 0 && image.charAt(0) == '#') {
-			image = "\"" + image.substring(1) + "\"";
-		}
 
 		return image;
 	}
@@ -699,7 +707,7 @@ public class DefineTable {
 	 * 
 	 */
 
-	public void populateDefineEquates(DataTypeManager openDTMgrs[], DataTypeManager dtMgr) {
+	public void populateDefineEquates(DataTypeManager openDTMgrs[], DataTypeManager dtMgr, String[] includePaths) {
 		int transactionID = dtMgr.startTransaction("Add Equates");
 
 		Iterator<String> iter = getDefineNames();
@@ -732,22 +740,23 @@ public class DefineTable {
 
 			value = lvalue.longValue();
 
-			populateDefineEquate(openDTMgrs, dtMgr, "defines", "define_", defName, value);
+			populateDefineEquate(openDTMgrs, dtMgr, "defines", "define_", defName, value, includePaths);
 		}
 
 		dtMgr.endTransaction(transactionID, true);
 	}
 
-	public void populateDefineEquate(DataTypeManager openDTMgrs[], DataTypeManager dtMgr, String category, String prefix, String defName, long value) {
+	public void populateDefineEquate(DataTypeManager openDTMgrs[], DataTypeManager dtMgr, String category,
+			String prefix, String defName, long value, String[] includePaths) {
 		String enumName = prefix + defName;
 
 		// Start the Enum at 8, then resize to fit the value
 		EnumDataType enuum = new EnumDataType(enumName, 8);
 		enuum.add(defName, value);
 		enuum.setLength(enuum.getMinimumPossibleLength());
-
 		String defPath = getDefinitionPath(defName);
-		String currentCategoryName = getFileName(defPath);
+		enuum.setDescription(defPath);
+		String currentCategoryName = getFileName(defPath, includePaths);
 		CategoryPath path = getCategory(currentCategoryName);
 		path = new CategoryPath(path, category);
 		enuum.setCategoryPath(path);
@@ -845,16 +854,26 @@ public class DefineTable {
 		if (catName == null || catName.length() == 0) {
 			return rootCat;
 		}
-		return new CategoryPath(rootCat, catName);
+		
+		return new CategoryPath(rootCat, catName.split("/"));
 	}
 
 	/*
 	 * Get the filename portion of a path
 	 */
-	private static String getFileName(String path) {
+	private static String getFileName(String path, String[] includePaths) {
 		if (path == null) {
 			return null;
 		}
+
+		for (String includePath : includePaths)
+		{
+			if (path.startsWith(includePath))
+			{
+				return path.substring(includePath.length() + 1);
+			}
+		}
+
 		int slashpos = path.lastIndexOf('/');
 		if (slashpos < 0) {
 			slashpos = path.lastIndexOf('\\');

@@ -17,12 +17,14 @@ package ghidra.app.util.cparser.C;
 
 import java.io.*;
 import java.util.Arrays;
+import java.util.Iterator;
 
 import javax.help.UnsupportedOperationException;
 
 import generic.theme.GThemeDefaults.Colors;
 import generic.theme.GThemeDefaults.Colors.Messages;
 import ghidra.app.services.DataTypeManagerService;
+import ghidra.app.util.cparser.CPP.DefineTable;
 import ghidra.app.util.cparser.CPP.PreProcessor;
 import ghidra.framework.Application;
 import ghidra.framework.plugintool.ServiceProvider;
@@ -592,7 +594,6 @@ public class CParserUtils {
 			os.flush();
 			os.close();
 			System.setOut(old);
-			
 		}
 		
 		cppMessages = cpp.getParseMessages();
@@ -602,7 +603,7 @@ public class CParserUtils {
 		
 		// process all the defines and add any that are integer values into
 		// the Equates table
-		cpp.getDefinitions().populateDefineEquates(openDTmanagers, dtMgr);
+		cpp.getDefinitions().populateDefineEquates(openDTmanagers, dtMgr, includePaths);
 
 		String parserMessages = "";
 		boolean cparseSucceeded = false;
@@ -615,6 +616,7 @@ public class CParserUtils {
 				parserMessages = "";
 				cParser.setParseFileName(fName);
 				cParser.setMonitor(monitor);
+				cParser.setIncludePaths(includePaths);
 				cParser.parse(bis);
 				cparseSucceeded = cParser.didParseSucceed();
 			} catch (RuntimeException re) {

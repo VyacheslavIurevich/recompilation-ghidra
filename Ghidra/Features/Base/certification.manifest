@@ -38,6 +38,7 @@ data/parserprofiles/VisualStudio12_64.prf||GHIDRA||||END|
 data/parserprofiles/VisualStudio22_64.prf||GHIDRA||||END|
 data/parserprofiles/VisualStudio9.prf||GHIDRA||||END|
 data/parserprofiles/clib.prf||GHIDRA||||END|
+data/parserprofiles/clib_x86_64-gcc.prf||GHIDRA||||END|
 data/parserprofiles/generic_clib_32.prf||GHIDRA||||END|
 data/parserprofiles/generic_clib_64.prf||GHIDRA||||END|
 data/parserprofiles/linux_32.prf||GHIDRA||||END|
@@ -88,6 +89,7 @@ data/symbols/win64/mfc80u.exports||GHIDRA||||END|
 data/symbols/win64/mfc90.exports||GHIDRA||||END|
 data/symbols/win64/mfc90u.exports||GHIDRA||||END|
 data/symbols/win64/msvcrt.hints||GHIDRA||||END|
+data/typeinfo/clib/clib_gcc_x86_64-linux-gnu.gdt||GHIDRA||||END|
 data/typeinfo/generic/generic_clib.gdt||GHIDRA||||END|
 data/typeinfo/generic/generic_clib_64.gdt||GHIDRA||||END|
 data/typeinfo/golang/golang_1.15_anybit_any.gdt||GHIDRA||||END|

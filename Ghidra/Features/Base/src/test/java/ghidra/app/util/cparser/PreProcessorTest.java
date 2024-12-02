@@ -94,7 +94,7 @@ public class PreProcessorTest extends AbstractGenericTest {
 		// System.err.println(baos.toString());
 
 		dtMgr = new StandAloneDataTypeManager("parsed");
-		parser.getDefinitions().populateDefineEquates(null, dtMgr);
+		parser.getDefinitions().populateDefineEquates(null, dtMgr, new String[0]);
 	}
 
 	@AfterClass
