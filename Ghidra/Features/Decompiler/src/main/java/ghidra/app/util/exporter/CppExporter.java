@@ -49,6 +49,7 @@ public class CppExporter extends Exporter {
 	public static final String EMIT_TYPE_DEFINITONS = "Emit Data-type Definitions";
 	public static final String FUNCTION_TAG_FILTERS = "Function Tags to Filter";
 	public static final String FUNCTION_TAG_EXCLUDE = "Function Tags Excluded";
+	public static final String C_RUNTIME_EXCLUDE = "Exclude C Runtime functions";
 
 	private static String EOL = System.getProperty("line.separator");
 
@@ -56,6 +57,7 @@ public class CppExporter extends Exporter {
 	private boolean isCreateCFile = true;
 	private boolean isUseCppStyleComments = true;
 	private boolean emitDataTypeDefinitions = true;
+	private boolean excludeCRuntime = true;
 	private String tagOptions = "";
 
 	private Set<FunctionTag> functionTagSet = new HashSet<>();
@@ -68,8 +70,8 @@ public class CppExporter extends Exporter {
 		super("C/C++", "c", new HelpLocation("ExporterPlugin", "c_cpp"));
 	}
 
-	public CppExporter(DecompileOptions options, boolean createHeader, boolean createFile,
-			boolean emitTypes, boolean excludeTags, String tags) {
+	public CppExporter(DecompileOptions options, boolean createHeader, boolean createFile, boolean emitTypes,
+			boolean excludeTags, String tags) {
 		this();
 		this.options = options;
 		if (options != null) {
@@ -85,8 +87,8 @@ public class CppExporter extends Exporter {
 	}
 
 	@Override
-	public boolean export(File file, DomainObject domainObj, AddressSetView addrSet,
-			TaskMonitor monitor) throws IOException, ExporterException {
+	public boolean export(File file, DomainObject domainObj, AddressSetView addrSet, TaskMonitor monitor)
+			throws IOException, ExporterException {
 		if (!(domainObj instanceof Program)) {
 			log.appendMsg("Unsupported type: " + domainObj.getClass().getName());
 			return false;
@@ -112,12 +114,11 @@ public class CppExporter extends Exporter {
 			cFileWriter = new PrintWriter(file);
 		}
 
-		CachingPool<DecompInterface> decompilerPool =
-			new CachingPool<>(new DecompilerFactory(program));
+		CachingPool<DecompInterface> decompilerPool = new CachingPool<>(new DecompilerFactory(program));
 		ParallelDecompilerCallback callback = new ParallelDecompilerCallback(decompilerPool);
 		ChunkingTaskMonitor chunkingMonitor = new ChunkingTaskMonitor(monitor);
-		ChunkingParallelDecompiler<CPPResult> parallelDecompiler =
-			ParallelDecompiler.createChunkingParallelDecompiler(callback, chunkingMonitor);
+		ChunkingParallelDecompiler<CPPResult> parallelDecompiler = ParallelDecompiler
+				.createChunkingParallelDecompiler(callback, chunkingMonitor);
 
 		try {
 			if (emitDataTypeDefinitions) {
@@ -126,19 +127,15 @@ public class CppExporter extends Exporter {
 			}
 			chunkingMonitor.checkCancelled();
 
-			decompileAndExport(addrSet, program, headerWriter, cFileWriter, parallelDecompiler,
-				chunkingMonitor);
+			decompileAndExport(addrSet, program, headerWriter, cFileWriter, parallelDecompiler, chunkingMonitor);
 
 			return true;
-		}
-		catch (CancelledException e) {
+		} catch (CancelledException e) {
 			return false;
-		}
-		catch (Exception e) {
+		} catch (Exception e) {
 			Msg.error(this, "Error exporting C/C++", e);
 			return false;
-		}
-		finally {
+		} finally {
 			decompilerPool.dispose();
 			parallelDecompiler.dispose();
 
@@ -152,11 +149,9 @@ public class CppExporter extends Exporter {
 
 	}
 
-	private void decompileAndExport(AddressSetView addrSet, Program program,
-			PrintWriter headerWriter, PrintWriter cFileWriter,
-			ChunkingParallelDecompiler<CPPResult> parallelDecompiler,
-			ChunkingTaskMonitor chunkingMonitor)
-			throws InterruptedException, Exception, CancelledException {
+	private void decompileAndExport(AddressSetView addrSet, Program program, PrintWriter headerWriter,
+			PrintWriter cFileWriter, ChunkingParallelDecompiler<CPPResult> parallelDecompiler,
+			ChunkingTaskMonitor chunkingMonitor) throws InterruptedException, Exception, CancelledException {
 
 		int functionCount = program.getFunctionManager().getFunctionCount();
 		chunkingMonitor.doInitialize(functionCount);
@@ -187,7 +182,18 @@ public class CppExporter extends Exporter {
 		writeResults(results, headerWriter, cFileWriter, chunkingMonitor);
 	}
 
+	private static final String CRT_PREFIX = "_";
+
+	private boolean isCRTFunction(Function function) {
+		String functionName = function.getName();
+		return functionName.startsWith(CRT_PREFIX);
+	}
+
 	private boolean excludeFunction(Function currentFunction) {
+
+		if (excludeCRuntime && isCRTFunction(currentFunction)) {
+			return true;
+		}
 
 		if (functionTagSet.isEmpty()) {
 			return false;
@@ -205,8 +211,8 @@ public class CppExporter extends Exporter {
 		return excludeMatchingTags == hasTag;
 	}
 
-	private void writeResults(List<CPPResult> results, PrintWriter headerWriter,
-			PrintWriter cFileWriter, TaskMonitor monitor) throws CancelledException {
+	private void writeResults(List<CPPResult> results, PrintWriter headerWriter, PrintWriter cFileWriter,
+			TaskMonitor monitor) throws CancelledException {
 		monitor.checkCancelled();
 
 		Collections.sort(results);
@@ -248,8 +254,7 @@ public class CppExporter extends Exporter {
 
 			if (isUseCppStyleComments) {
 				options.setCommentStyle(CommentStyleEnum.CPPStyle);
-			}
-			else {
+			} else {
 				options.setCommentStyle(CommentStyleEnum.CStyle);
 			}
 		}
@@ -272,12 +277,11 @@ public class CppExporter extends Exporter {
 		}
 	}
 
-	private void writeProgramDataTypes(Program program, File header, PrintWriter headerWriter,
-			PrintWriter cFileWriter, TaskMonitor monitor) throws IOException, CancelledException {
+	private void writeProgramDataTypes(Program program, File header, PrintWriter headerWriter, PrintWriter cFileWriter,
+			TaskMonitor monitor) throws IOException, CancelledException {
 		if (headerWriter != null) {
 			DataTypeManager dtm = program.getDataTypeManager();
-			DataTypeWriter dataTypeWriter =
-				new DataTypeWriter(dtm, headerWriter, isUseCppStyleComments);
+			DataTypeWriter dataTypeWriter = new DataTypeWriter(dtm, headerWriter, isUseCppStyleComments);
 			headerWriter.write(getFakeCTypeDefinitions(dtm.getDataOrganization()));
 			dataTypeWriter.write(dtm, monitor);
 
@@ -287,11 +291,9 @@ public class CppExporter extends Exporter {
 			if (cFileWriter != null) {
 				cFileWriter.println("#include \"" + header.getName() + "\"");
 			}
-		}
-		else if (cFileWriter != null) {
+		} else if (cFileWriter != null) {
 			DataTypeManager dtm = program.getDataTypeManager();
-			DataTypeWriter dataTypeWriter =
-				new DataTypeWriter(dtm, cFileWriter, isUseCppStyleComments);
+			DataTypeWriter dataTypeWriter = new DataTypeWriter(dtm, cFileWriter, isUseCppStyleComments);
 			dataTypeWriter.write(dtm, monitor);
 		}
 
@@ -302,26 +304,23 @@ public class CppExporter extends Exporter {
 
 	}
 
-	private void writeEquates(Program program, File header, PrintWriter headerWriter,
-			PrintWriter cFileWriter, TaskMonitor monitor) throws CancelledException {
+	private void writeEquates(Program program, File header, PrintWriter headerWriter, PrintWriter cFileWriter,
+			TaskMonitor monitor) throws CancelledException {
 		boolean equatesPresent = false;
 		for (Equate equate : CollectionUtils.asIterable(program.getEquateTable().getEquates())) {
 			monitor.checkCancelled();
 			equatesPresent = true;
-			String define =
-				"#define %s %s".formatted(equate.getDisplayName(), equate.getDisplayValue());
+			String define = "#define %s %s".formatted(equate.getDisplayName(), equate.getDisplayValue());
 			if (headerWriter != null) {
 				headerWriter.println(define);
-			}
-			else if (cFileWriter != null) {
+			} else if (cFileWriter != null) {
 				cFileWriter.println(define);
 			}
 		}
 		if (equatesPresent) {
 			if (headerWriter != null) {
 				headerWriter.println();
-			}
-			else if (cFileWriter != null) {
+			} else if (cFileWriter != null) {
 				cFileWriter.println();
 			}
 		}
@@ -345,6 +344,7 @@ public class CppExporter extends Exporter {
 		list.add(new Option(EMIT_TYPE_DEFINITONS, Boolean.valueOf(emitDataTypeDefinitions)));
 		list.add(new Option(FUNCTION_TAG_FILTERS, tagOptions));
 		list.add(new Option(FUNCTION_TAG_EXCLUDE, Boolean.valueOf(excludeMatchingTags)));
+		list.add(new Option(C_RUNTIME_EXCLUDE, Boolean.valueOf(excludeCRuntime)));
 		return list;
 	}
 
@@ -355,29 +355,23 @@ public class CppExporter extends Exporter {
 			try {
 				if (optName.equals(CREATE_HEADER_FILE)) {
 					isCreateHeaderFile = ((Boolean) option.getValue()).booleanValue();
-				}
-				else if (optName.equals(CREATE_C_FILE)) {
+				} else if (optName.equals(CREATE_C_FILE)) {
 					isCreateCFile = ((Boolean) option.getValue()).booleanValue();
-				}
-				else if (optName.equals(USE_CPP_STYLE_COMMENTS)) {
+				} else if (optName.equals(USE_CPP_STYLE_COMMENTS)) {
 					isUseCppStyleComments = ((Boolean) option.getValue()).booleanValue();
-				}
-				else if (optName.equals(EMIT_TYPE_DEFINITONS)) {
+				} else if (optName.equals(EMIT_TYPE_DEFINITONS)) {
 					emitDataTypeDefinitions = ((Boolean) option.getValue()).booleanValue();
-				}
-				else if (optName.equals(FUNCTION_TAG_FILTERS)) {
+				} else if (optName.equals(FUNCTION_TAG_FILTERS)) {
 					tagOptions = (String) option.getValue();
-				}
-				else if (optName.equals(FUNCTION_TAG_EXCLUDE)) {
+				} else if (optName.equals(FUNCTION_TAG_EXCLUDE)) {
 					excludeMatchingTags = ((Boolean) option.getValue()).booleanValue();
-				}
-				else {
+				} else if (optName.equals(C_RUNTIME_EXCLUDE)) {
+					excludeCRuntime = ((Boolean) option.getValue()).booleanValue();
+				} else {
 					throw new OptionException("Unknown option: " + optName);
 				}
-			}
-			catch (ClassCastException e) {
-				throw new OptionException(
-					"Invalid type for option: " + optName + " - " + e.getMessage());
+			} catch (ClassCastException e) {
+				throw new OptionException("Invalid type for option: " + optName + " - " + e.getMessage());
 			}
 		}
 	}
@@ -388,35 +382,41 @@ public class CppExporter extends Exporter {
 
 	private static String getBuiltInDeclaration(String typeName, int typeLen, boolean signed,
 			DataOrganization dataOrganization) {
-		return getBuiltInDeclaration(typeName,
-			dataOrganization.getIntegerCTypeApproximation(typeLen, signed));
+		return getBuiltInDeclaration(typeName, dataOrganization.getIntegerCTypeApproximation(typeLen, signed));
 	}
 
 	/**
-	 * Generate suitable C-style definition statements (#define) for any fake data-type names
-	 * which may be produced by the decompiler (e.g., unkint, unkuint, etc.).
-	 * @param dataOrganization is the data organization to result the size of core types.
-	 * @return multi-line string containing C-style declarations of fake decompiler types.
+	 * Generate suitable C-style definition statements (#define) for any fake
+	 * data-type names which may be produced by the decompiler (e.g., unkint,
+	 * unkuint, etc.).
+	 * 
+	 * @param dataOrganization is the data organization to result the size of core
+	 *                         types.
+	 * @return multi-line string containing C-style declarations of fake decompiler
+	 *         types.
 	 */
 	private static String getFakeCTypeDefinitions(DataOrganization dataOrganization) {
 
 		StringWriter writer = new StringWriter();
 
-		// unkbyte - decompiler fabricated unknown types - need only cover sizes larger than the max Undefined size
+		// unkbyte - decompiler fabricated unknown types - need only cover sizes larger
+		// than the max Undefined size
 		for (int n = 9; n <= 16; n++) {
 			writer.write(getBuiltInDeclaration("unkbyte" + n, n, false, dataOrganization));
 		}
 		writer.write(EOL);
 
 		// unkuint - decompiler fabricated unsigned integer types
-		// need only cover sizes larger than the max integer size (i.e., AbstractIntegerDataType)
+		// need only cover sizes larger than the max integer size (i.e.,
+		// AbstractIntegerDataType)
 		for (int n = 9; n <= 16; n++) {
 			writer.write(getBuiltInDeclaration("unkuint" + n, n, false, dataOrganization));
 		}
 		writer.write(EOL);
 
 		// unkint - decompiler fabricated signed integer types
-		// need only cover sizes larger than the max integer size (i.e., AbstractIntegerDataType)
+		// need only cover sizes larger than the max integer size (i.e.,
+		// AbstractIntegerDataType)
 		for (int n = 9; n <= 16; n++) {
 			writer.write(getBuiltInDeclaration("unkint" + n, n, true, dataOrganization));
 		}
@@ -426,13 +426,16 @@ public class CppExporter extends Exporter {
 		writer.write(getBuiltInDeclaration("unkfloat1", "float"));
 		writer.write(getBuiltInDeclaration("unkfloat2", "float"));
 		writer.write(getBuiltInDeclaration("unkfloat3", "float"));
-		//writer.write(getBuiltInDeclaration("unkfloat4", "float")); // covered by fixed-size built-in float
+		// writer.write(getBuiltInDeclaration("unkfloat4", "float")); // covered by
+		// fixed-size built-in float
 		writer.write(getBuiltInDeclaration("unkfloat5", "double"));
 		writer.write(getBuiltInDeclaration("unkfloat6", "double"));
 		writer.write(getBuiltInDeclaration("unkfloat7", "double"));
-		//writer.write(getBuiltInDeclaration("unkfloat8", "double")); // covered by fixed-size built-in double
+		// writer.write(getBuiltInDeclaration("unkfloat8", "double")); // covered by
+		// fixed-size built-in double
 		writer.write(getBuiltInDeclaration("unkfloat9", "long double"));
-		//writer.write(getBuiltInDeclaration("unkfloat10", "long double")); // covered by fixed-size built-in longdouble
+		// writer.write(getBuiltInDeclaration("unkfloat10", "long double")); // covered
+		// by fixed-size built-in longdouble
 		writer.write(getBuiltInDeclaration("unkfloat11", "long double"));
 		writer.write(getBuiltInDeclaration("unkfloat12", "long double"));
 		writer.write(getBuiltInDeclaration("unkfloat13", "long double"));
@@ -492,7 +495,7 @@ public class CppExporter extends Exporter {
 			DecompInterface decompiler = new DecompInterface();
 			decompiler.setOptions(options);
 			decompiler.openProgram(program);
-			decompiler.toggleSyntaxTree(false);		// Don't need syntax tree
+			decompiler.toggleSyntaxTree(false); // Don't need syntax tree
 			return decompiler;
 		}
 
@@ -520,48 +523,42 @@ public class CppExporter extends Exporter {
 			try {
 				CPPResult result = doWork(function, decompiler, monitor);
 				return result;
-			}
-			finally {
+			} finally {
 				pool.release(decompiler);
 			}
 		}
 
-		private CPPResult doWork(Function function, DecompInterface decompiler,
-				TaskMonitor monitor) {
+		private CPPResult doWork(Function function, DecompInterface decompiler, TaskMonitor monitor) {
 			Address entryPoint = function.getEntryPoint();
 			CodeUnit codeUnitAt = function.getProgram().getListing().getCodeUnitAt(entryPoint);
 			if (codeUnitAt == null || !(codeUnitAt instanceof Instruction)) {
-				return new CPPResult(entryPoint, function.getPrototypeString(false, false) + ';',
-					null);
+				return new CPPResult(entryPoint, function.getPrototypeString(false, false) + ';', null);
 			}
 
 			monitor.setMessage("Decompiling " + function.getName());
 
-			DecompileResults dr =
-				decompiler.decompileFunction(function, options.getDefaultTimeout(), monitor);
+			DecompileResults dr = decompiler.decompileFunction(function, options.getDefaultTimeout(), monitor);
 			String errorMessage = dr.getErrorMessage();
 			if (!"".equals(errorMessage)) {
 				Msg.warn(CppExporter.this, "Error decompiling: " + errorMessage);
 				if (options.isWARNCommentIncluded()) {
 					monitor.incrementProgress(1);
-					return new CPPResult(entryPoint, null,
-						"/*" + EOL + "Unable to decompile '" + function.getName() + "'" + EOL +
-							"Cause: " + errorMessage + EOL + "*/" + EOL);
+					return new CPPResult(entryPoint, null, "/*" + EOL + "Unable to decompile '" + function.getName()
+							+ "'" + EOL + "Cause: " + errorMessage + EOL + "*/" + EOL);
 				}
 				return null;
 			}
 
 			DecompiledFunction decompiledFunction = dr.getDecompiledFunction();
-			return new CPPResult(entryPoint, decompiledFunction.getSignature(),
-				decompiledFunction.getC());
+			return new CPPResult(entryPoint, decompiledFunction.getSignature(), decompiledFunction.getC());
 		}
 	}
 
 	/**
-	 * A class that exists because we are doing something that the ConcurrentQ was not
-	 * designed for--chunking.  We do not want out monitor being reset every time we start a new
-	 * chunk. So, we wrap a real monitor, overriding the behavior such that initialize() has
-	 * no effect when it is called by the queue.
+	 * A class that exists because we are doing something that the ConcurrentQ was
+	 * not designed for--chunking. We do not want out monitor being reset every time
+	 * we start a new chunk. So, we wrap a real monitor, overriding the behavior
+	 * such that initialize() has no effect when it is called by the queue.
 	 */
 	private class ChunkingTaskMonitor extends TaskMonitorAdapter {
 		private TaskMonitor monitor;
