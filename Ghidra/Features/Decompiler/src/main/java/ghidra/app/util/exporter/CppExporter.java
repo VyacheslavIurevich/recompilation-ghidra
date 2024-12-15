@@ -17,9 +17,12 @@ package ghidra.app.util.exporter;
 
 import java.io.*;
 import java.util.*;
+import java.nio.file.Files;
+import java.nio.file.Paths;
 
 import org.apache.commons.lang3.StringUtils;
 
+//import aQute.bnd.header.Attrs.DataType;
 import generic.cache.CachingPool;
 import generic.cache.CountingBasicFactory;
 import generic.concurrent.QCallback;
@@ -49,6 +52,7 @@ public class CppExporter extends Exporter {
 	public static final String EMIT_TYPE_DEFINITONS = "Emit Data-type Definitions";
 	public static final String FUNCTION_TAG_FILTERS = "Function Tags to Filter";
 	public static final String FUNCTION_TAG_EXCLUDE = "Function Tags Excluded";
+	public static final String INCLUDE_HEADER_FILES = "Include header files";
 
 	private static String EOL = System.getProperty("line.separator");
 
@@ -56,6 +60,7 @@ public class CppExporter extends Exporter {
 	private boolean isCreateCFile = true;
 	private boolean isUseCppStyleComments = true;
 	private boolean emitDataTypeDefinitions = true;
+	private boolean incledeHeaderFiles = true;
 	private String tagOptions = "";
 
 	private Set<FunctionTag> functionTagSet = new HashSet<>();
@@ -120,10 +125,19 @@ public class CppExporter extends Exporter {
 			ParallelDecompiler.createChunkingParallelDecompiler(callback, chunkingMonitor);
 
 		try {
+			if (incledeHeaderFiles) {
+				writeIncludeHeaders(program, header, headerWriter, cFileWriter);
+			}
+
 			if (emitDataTypeDefinitions) {
 				writeEquates(program, header, headerWriter, cFileWriter, chunkingMonitor);
 				writeProgramDataTypes(program, header, headerWriter, cFileWriter, chunkingMonitor);
 			}
+
+			if (cFileWriter != null && headerWriter != null) {
+				cFileWriter.println("#include \"" + header.getName() + "\"");
+			}
+
 			chunkingMonitor.checkCancelled();
 
 			decompileAndExport(addrSet, program, headerWriter, cFileWriter, parallelDecompiler,
@@ -272,6 +286,40 @@ public class CppExporter extends Exporter {
 		}
 	}
 
+	private void writeIncludeHeaders(Program program, File header, PrintWriter headerWriter,
+			PrintWriter cFileWriter) throws IOException, CancelledException {
+		if (headerWriter != null) {
+			headerWriter.print(getAllHeaderFiles(program));
+		}
+		else if (cFileWriter != null) {
+			cFileWriter.print(getAllHeaderFiles(program));
+		}
+
+		if (cFileWriter != null) {
+			cFileWriter.println("");
+			cFileWriter.println("");
+		}
+
+	}
+
+	private String getAllHeaderFiles(Program program) throws IOException  {
+		HashSet<String> headerList = new HashSet<String>();
+		String resultString = new String();
+		for (SourceArchive sourceArchive : program.getDataTypeManager().getSourceArchives())
+		{
+			for (DataType dataType :  program.getDataTypeManager().getDataTypes(sourceArchive)) {
+				String headerName = dataType.getPathName().substring(1, dataType.getPathName().indexOf(".h") + 2);
+				if (dataType.getPathName().contains(".h") &&
+						!headerList.contains(headerName)) {
+					headerList.add(headerName);
+					resultString = resultString.concat("#include <" + headerName + ">\n");
+				}
+			}
+		}
+
+		return resultString;
+	}
+
 	private void writeProgramDataTypes(Program program, File header, PrintWriter headerWriter,
 			PrintWriter cFileWriter, TaskMonitor monitor) throws IOException, CancelledException {
 		if (headerWriter != null) {
@@ -283,10 +331,6 @@ public class CppExporter extends Exporter {
 
 			headerWriter.println("");
 			headerWriter.println("");
-
-			if (cFileWriter != null) {
-				cFileWriter.println("#include \"" + header.getName() + "\"");
-			}
 		}
 		else if (cFileWriter != null) {
 			DataTypeManager dtm = program.getDataTypeManager();
@@ -343,6 +387,7 @@ public class CppExporter extends Exporter {
 		list.add(new Option(CREATE_C_FILE, Boolean.valueOf(isCreateCFile)));
 		list.add(new Option(USE_CPP_STYLE_COMMENTS, Boolean.valueOf(isUseCppStyleComments)));
 		list.add(new Option(EMIT_TYPE_DEFINITONS, Boolean.valueOf(emitDataTypeDefinitions)));
+		list.add(new Option(INCLUDE_HEADER_FILES, Boolean.valueOf(incledeHeaderFiles)));
 		list.add(new Option(FUNCTION_TAG_FILTERS, tagOptions));
 		list.add(new Option(FUNCTION_TAG_EXCLUDE, Boolean.valueOf(excludeMatchingTags)));
 		return list;
@@ -364,6 +409,9 @@ public class CppExporter extends Exporter {
 				}
 				else if (optName.equals(EMIT_TYPE_DEFINITONS)) {
 					emitDataTypeDefinitions = ((Boolean) option.getValue()).booleanValue();
+				}
+				else if (optName.equals(INCLUDE_HEADER_FILES)) {
+					incledeHeaderFiles = ((Boolean) option.getValue()).booleanValue();
 				}
 				else if (optName.equals(FUNCTION_TAG_FILTERS)) {
 					tagOptions = (String) option.getValue();

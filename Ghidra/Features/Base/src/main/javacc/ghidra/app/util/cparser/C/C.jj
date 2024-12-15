@@ -97,7 +97,6 @@ import java.util.*;
 
 @SuppressWarnings("all")  // ignore warnings from generated code
 public class CParser {
-
     private static String DEFAULT_PARSER_OUTPUT_FILENAME = "CParser.out";
     
     // Map for storing typedef types
@@ -122,7 +121,9 @@ public class CParser {
 
     private String headerFileName= null;     // Current header file from #line token
     private int headerFileLine = 1;          // Current line number from #line token
-    private int headerFileLineOffset= 0;     // offset into parse stream of last #line token
+    private int headerFileLineOffset = 0;     // Offset into parse stream of last #line token
+    private String[] includePaths = null;	 // Paths to header files
+    private HashSet<String> filenames = new HashSet<String>();	// Header files
     private String currentCategoryName = ""; // Current category, ROOT category
 
     private final static String ANONYMOUS_STRUCT_PREFIX = "_struct_";
@@ -136,7 +137,7 @@ public class CParser {
     private Stack<DataType> dataTypeStack = new Stack<DataType>();
 
     private StringBuilder parseMessages = new StringBuilder();
-
+	
     // true if parse was successful
     private boolean parseSuccess = false;
     
@@ -153,6 +154,21 @@ public class CParser {
         parseFileName = fName;
     }
     
+    public void setIncludePaths(String[] Paths) {
+        includePaths = Paths;
+    }
+
+    public void setFilenames(String[] files) {
+		if (files == null || files.length < 1) {
+			return;
+		}
+
+		for (String file : files)
+		{
+			filenames.add(file);
+		}
+	}
+
     private CategoryPath getCurrentCategoryPath() {
         return getCategory(currentCategoryName);
     }
@@ -167,11 +183,22 @@ public class CParser {
             return rootCat;
         }
         
-        CategoryPath cat= new CategoryPath(rootCat, catName);
+        CategoryPath cat = new CategoryPath(rootCat, catName.split("/"));
         return cat;
     }
 
     private String getFileName(String path) {
+		if (includePaths != null)
+		{
+			for (String includePath : includePaths)
+			{
+				if (path.startsWith(includePath))
+				{
+					return path.substring(includePath.length() + 1);
+				}
+			}
+		}
+
         int slashpos = path.lastIndexOf('/');
         if (slashpos < 0) {
             slashpos = path.lastIndexOf('\\');
@@ -1526,10 +1553,15 @@ void LineDef() : {
 {
     (<LINE> | <LINEALT>)  ( lineTok= <LINENUMBER_LITERAL> )  ( fileTok= <PATH_LITERAL> ) [ (<INTEGER_LITERAL>)+ ]
     {
-        headerFileName= fileTok.image.substring(1, fileTok.image.length() - 1);
-        headerFileLine= Integer.parseInt(lineTok.image);
-        headerFileLineOffset= lineTok.beginLine;
-        currentCategoryName = getFileName(headerFileName);
+        headerFileName = fileTok.image.substring(1, fileTok.image.length() - 1);
+        headerFileLine = Integer.parseInt(lineTok.image);
+        headerFileLineOffset = lineTok.beginLine;
+        String categoryName = getFileName(headerFileName);
+        if (filenames.contains(categoryName))
+        {
+        	currentCategoryName = categoryName;
+        }
+        
     }
 }
 
@@ -2096,7 +2128,7 @@ Composite StructOrUnion() : {
         }
         |
         <UNION>  ( DeclSpec(dec) )* {
-            comp = new UnionDataType(getCurrentCategoryPath(), ANONYMOUS_UNION_PREFIX  + cnt++, dtMgr); 
+            comp = new UnionDataType(getCurrentCategoryPath(), ANONYMOUS_UNION_PREFIX  + cnt++, dtMgr);
         
             // Always set the packing, because by default structures should be aligned
             if (packSize > 0) {

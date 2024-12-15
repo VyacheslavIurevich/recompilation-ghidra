@@ -375,6 +375,7 @@ public class ApplyFunctionDataTypesCmd extends BackgroundCommand<Program> {
 			return;
 		}
 
+		program.getDataTypeManager().addDataType(fdef, DataTypeConflictHandler.DEFAULT_HANDLER);
 		ApplyFunctionSignatureCmd fsigCmd =
 			new ApplyFunctionSignatureCmd(sym.getAddress(), fdef, source);
 		fsigCmd.applyTo(program);
