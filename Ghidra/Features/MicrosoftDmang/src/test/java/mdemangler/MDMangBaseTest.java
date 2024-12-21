@@ -2609,7 +2609,7 @@ public class MDMangBaseTest extends AbstractGenericTest {
 	}
 
 	//This test seems to dictate that a function pointer should be elaborated internal to CVMod, where the based5 will eliminate all of the function context.
-	//  It also seems to indicate that the "int" portion would be the referred-to type and the rest of the function spec would be part of the the function info.
+	//  It also seems to indicate that the "int" portion would be the referred-to type and the rest of the function spec would be part of the function info.
 	//  Other information at one time, led me to believe that the return type of a function is special... need to rekinkdle those thoughts, but think related to nested
 	//  functions, such as function returning a function pointer..
 	@Category(MDMangFailingTestCategory.class)
@@ -4651,6 +4651,34 @@ public class MDMangBaseTest extends AbstractGenericTest {
 	public void testUnderscore7e() throws Exception {
 		mangled = "??_7a@b@@6Bc@d@e@@f@g@h@@i@j@k@@@";
 		msTruth = "const b::a::`vftable'{for `e::d::c's `h::g::f's `k::j::i'}";
+		mdTruth = msTruth;
+		demangleAndTest();
+	}
+
+	// Backref used in parentage
+	@Test
+	public void testUnderscore7f() throws Exception {
+		mangled = "??_7a@b@@6B01@@";
+		msTruth = "const b::a::`vftable'{for `b::a'}";
+		mdTruth = msTruth;
+		demangleAndTest();
+	}
+
+	// vbtable with anonymous namespace
+	@Test
+	public void testUnderscore7AnonNs() throws Exception {
+		mangled = "??_7a@?A0xfedcba98@b@@6B@";
+		msTruth = "const b::`anonymous namespace'::a::`vftable'";
+		mdTruth = msTruth;
+		demangleAndTest();
+	}
+
+	// vbtable with anonymous namespace
+	@Test
+	public void testUnderscore7AnonNsAndBackref() throws Exception {
+		mangled = "??_7a@?A0xfedcba98@b@@6B012@01@@";
+		msTruth =
+			"const b::`anonymous namespace'::a::`vftable'{for `b::A0xfedcba98::a's `A0xfedcba98::a'}";
 		mdTruth = msTruth;
 		demangleAndTest();
 	}

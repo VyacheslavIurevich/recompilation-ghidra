@@ -59,16 +59,13 @@ public class ImporterUtilities {
 
 	/**
 	 * File extension filter for well known 'loadable' files for GhidraFileChoosers.
-	 *
-	 * TODO: will be refactored to use file_extension_icon.xml file info.
 	 */
 	public static final GhidraFileFilter LOADABLE_FILES_FILTER = ExtensionFileFilter.forExtensions(
-		"Loadable files", "exe", "dll", "obj", "drv", "bin", "hex", "o", "a", "so", "class", "lib");
+		"Loadable files", "exe", "dll", "obj", "drv", "bin", "hex", "o", "a", "so", "class", "lib",
+		"dylib");
 
 	/**
 	 * File extension filter for well known 'container' files for GhidraFileChoosers.
-	 *
-	 * TODO: will be refactored to use file_extension_icon.xml file info.
 	 */
 	public static final GhidraFileFilter CONTAINER_FILES_FILTER =
 		ExtensionFileFilter.forExtensions("Container files", "zip", "tar", "tgz", "jar", "gz",
@@ -552,14 +549,19 @@ public class ImporterUtilities {
 		LoaderMap loaderMap = LoaderService.getSupportedLoadSpecs(provider,
 			loader -> loader.getName().equalsIgnoreCase(program.getExecutableFormat()));
 
+		if (loaderMap.isEmpty()) {
+			return null;
+		}
+
 		Loader loader = loaderMap.firstKey();
 		if (loader == null) {
 			return null;
 		}
+
+		LanguageCompilerSpecPair programLcs = program.getLanguageCompilerSpecPair();
 		return loaderMap.get(loader)
 				.stream()
-				.filter(
-					e -> e.getLanguageCompilerSpec().equals(program.getLanguageCompilerSpecPair()))
+				.filter(e -> programLcs.equals(e.getLanguageCompilerSpec()))
 				.findFirst()
 				.orElse(null);
 	}

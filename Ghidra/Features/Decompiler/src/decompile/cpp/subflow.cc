@@ -14,6 +14,7 @@
  * limitations under the License.
  */
 #include "subflow.hh"
+#include "funcdata.hh"
 
 namespace ghidra {
 
@@ -442,6 +443,16 @@ bool SubvariableFlow::traceForward(ReplaceVarnode *rvn)
       if (!createLink(rop,rvn->mask<<sa,-1,outvn)) return false;
       hcount += 1;
       break;
+    case CPUI_INT_DIV:
+    case CPUI_INT_REM:
+      if ((rvn->mask & 1)==0) return false;	// Logical value must be least sig bits
+      if ((bitsize & 7)!=0) return false;	// Must be a whole number of bytes
+      if (!op->getIn(0)->isZeroExtended(flowsize)) return false;
+      if (!op->getIn(1)->isZeroExtended(flowsize)) return false;
+      rop = createOpDown(op->code(),2,op,rvn,slot);
+      if (!createLink(rop,rvn->mask,-1,outvn)) return false;
+      hcount += 1;
+      break;
     case CPUI_INT_ADD:
       if ((rvn->mask & 1)==0)
 	return false;		// Cannot account for carry
@@ -766,6 +777,16 @@ bool SubvariableFlow::traceBackward(ReplaceVarnode *rvn)
       if (!createLink(rop,rvn->mask,0,op->getIn(0))) return false;
       if (!createLink(rop,rvn->mask,1,op->getIn(1))) return false;
     }
+    return true;
+  case CPUI_INT_DIV:
+  case CPUI_INT_REM:
+    if ((rvn->mask & 1) == 0) return false;
+    if ((bitsize & 7)!=0) return false;	// Must be a whole number of bytes
+    if (!op->getIn(0)->isZeroExtended(flowsize)) return false;
+    if (!op->getIn(1)->isZeroExtended(flowsize)) return false;
+    rop = createOp(op->code(),2,rvn);
+    if (!createLink(rop,rvn->mask,0,op->getIn(0))) return false;
+    if (!createLink(rop,rvn->mask,1,op->getIn(1))) return false;
     return true;
   case CPUI_SUBPIECE:
     sa = (int4)op->getIn(1)->getOffset() * 8;
@@ -1506,6 +1527,204 @@ void SubvariableFlow::doReplacement(void)
   }
 }
 
+void RuleSubvarAnd::getOpList(vector<uint4> &oplist) const
+
+{
+  oplist.push_back(CPUI_INT_AND);
+}
+
+int4 RuleSubvarAnd::applyOp(PcodeOp *op,Funcdata &data)
+
+{
+  if (!op->getIn(1)->isConstant()) return 0;
+  Varnode *vn = op->getIn(0);
+  Varnode *outvn = op->getOut();
+  //  if (vn->getSize() != 1) return 0; // Only for bitsize variables
+  if (outvn->getConsume() != op->getIn(1)->getOffset()) return 0;
+  if ((outvn->getConsume() & 1)==0) return 0;
+  uintb cmask;
+  if (outvn->getConsume() == (uintb)1)
+    cmask = (uintb)1;
+  else {
+    cmask = calc_mask(vn->getSize());
+    cmask >>=8;
+    while(cmask != 0) {
+      if (cmask == outvn->getConsume()) break;
+      cmask >>=8;
+    }
+  }
+  if (cmask == 0) return 0;
+  //  if (vn->getConsume() == 0) return 0;
+  //  if ((vn->getConsume() & 0xff)==0xff) return 0;
+  //  if (op->getIn(1)->getOffset() != (uintb)1) return 0;
+  if (op->getOut()->hasNoDescend()) return 0;
+  SubvariableFlow subflow(&data,vn,cmask,false,false,false);
+  if (!subflow.doTrace()) return 0;
+  subflow.doReplacement();
+  return 1;
+}
+
+void RuleSubvarSubpiece::getOpList(vector<uint4> &oplist) const
+
+{
+  oplist.push_back(CPUI_SUBPIECE);
+}
+
+int4 RuleSubvarSubpiece::applyOp(PcodeOp *op,Funcdata &data)
+
+{
+  Varnode *vn = op->getIn(0);
+  Varnode *outvn = op->getOut();
+  int4 flowsize = outvn->getSize();
+  uintb mask = calc_mask( flowsize );
+  mask <<= 8*((int4)op->getIn(1)->getOffset());
+  bool aggressive = outvn->isPtrFlow();
+  if (!aggressive) {
+    if ((vn->getConsume() & mask) != vn->getConsume()) return 0;
+    if (op->getOut()->hasNoDescend()) return 0;
+  }
+  bool big = false;
+  if (flowsize >= 8 && vn->isInput()) {
+    // Vector register inputs getting truncated to what actually gets used
+    // happens occasionally.  We let SubvariableFlow deal with this special case
+    // to avoid overlapping inputs
+    // TODO: ActionLaneDivide should be handling this
+    if (vn->loneDescend() == op)
+      big = true;
+  }
+  SubvariableFlow subflow(&data,vn,mask,aggressive,false,big);
+  if (!subflow.doTrace()) return 0;
+  subflow.doReplacement();
+  return 1;
+}
+
+void RuleSubvarCompZero::getOpList(vector<uint4> &oplist) const
+
+{
+  oplist.push_back(CPUI_INT_NOTEQUAL);
+  oplist.push_back(CPUI_INT_EQUAL);
+}
+
+int4 RuleSubvarCompZero::applyOp(PcodeOp *op,Funcdata &data)
+
+{
+  if (!op->getIn(1)->isConstant()) return 0;
+  Varnode *vn = op->getIn(0);
+  uintb mask = vn->getNZMask();
+  int4 bitnum = leastsigbit_set(mask);
+  if (bitnum == -1) return 0;
+  if ((mask >> bitnum) != 1) return 0; // Check if only one bit active
+
+  // Check if the active bit is getting tested
+  if ((op->getIn(1)->getOffset()!=mask)&&
+      (op->getIn(1)->getOffset()!=0))
+    return 0;
+
+  if (op->getOut()->hasNoDescend()) return 0;
+  // We do a basic check that the stream from which it looks like
+  // the bit is getting pulled is not fully consumed
+  if (vn->isWritten()) {
+    PcodeOp *andop = vn->getDef();
+    if (andop->numInput()==0) return 0;
+    Varnode *vn0 = andop->getIn(0);
+    switch(andop->code()) {
+    case CPUI_INT_AND:
+    case CPUI_INT_OR:
+    case CPUI_INT_RIGHT:
+      {
+	if (vn0->isConstant()) return 0;
+	uintb mask0 = vn0->getConsume() & vn0->getNZMask();
+	uintb wholemask = calc_mask(vn0->getSize()) & mask0;
+	// We really need a popcnt here
+	// We want: if the number of bits that are both consumed
+	// and not known to be zero are "big" then don't continue
+	// because it doesn't look like a few bits getting manipulated
+	// within a status register
+	if ((wholemask & 0xff)==0xff) return 0;
+	if ((wholemask & 0xff00)==0xff00) return 0;
+      }
+      break;
+    default:
+      break;
+    }
+  }
+
+  SubvariableFlow subflow(&data,vn,mask,false,false,false);
+  if (!subflow.doTrace()) {
+    return 0;
+  }
+  subflow.doReplacement();
+  return 1;
+}
+
+void RuleSubvarShift::getOpList(vector<uint4> &oplist) const
+
+{
+  oplist.push_back(CPUI_INT_RIGHT);
+}
+
+int4 RuleSubvarShift::applyOp(PcodeOp *op,Funcdata &data)
+
+{
+  Varnode *vn = op->getIn(0);
+  if (vn->getSize() != 1) return 0;
+  if (!op->getIn(1)->isConstant()) return 0;
+  int4 sa = (int4)op->getIn(1)->getOffset();
+  uintb mask = vn->getNZMask();
+  if ((mask >> sa) != (uintb)1) return 0; // Pulling out a single bit
+  mask = (mask >> sa) << sa;
+  if (op->getOut()->hasNoDescend()) return 0;
+
+  SubvariableFlow subflow(&data,vn,mask,false,false,false);
+  if (!subflow.doTrace()) return 0;
+  subflow.doReplacement();
+  return 1;
+}
+
+void RuleSubvarZext::getOpList(vector<uint4> &oplist) const
+
+{
+  oplist.push_back(CPUI_INT_ZEXT);
+}
+
+int4 RuleSubvarZext::applyOp(PcodeOp *op,Funcdata &data)
+
+{
+  Varnode *vn = op->getOut();
+  Varnode *invn = op->getIn(0);
+  uintb mask = calc_mask(invn->getSize());
+
+  SubvariableFlow subflow(&data,vn,mask,invn->isPtrFlow(),false,false);
+  if (!subflow.doTrace()) return 0;
+  subflow.doReplacement();
+  return 1;
+}
+
+void RuleSubvarSext::getOpList(vector<uint4> &oplist) const
+
+{
+  oplist.push_back(CPUI_INT_SEXT);
+}
+
+int4 RuleSubvarSext::applyOp(PcodeOp *op,Funcdata &data)
+
+{
+  Varnode *vn = op->getOut();
+  Varnode *invn = op->getIn(0);
+  uintb mask = calc_mask(invn->getSize());
+
+  SubvariableFlow subflow(&data,vn,mask,isaggressive,true,false);
+  if (!subflow.doTrace()) return 0;
+  subflow.doReplacement();
+  return 1;
+}
+
+void RuleSubvarSext::reset(Funcdata &data)
+
+{
+  isaggressive = data.getArch()->aggressive_ext_trim;
+}
+
 /// \brief Find or build the placeholder objects for a Varnode that needs to be split
 ///
 /// Mark the Varnode so it doesn't get revisited.
@@ -1797,21 +2016,84 @@ bool SplitFlow::doTrace(void)
   return true;
 }
 
-/// If \b pointer Varnode is written by an INT_ADD, PTRSUB, or PTRADD from a another pointer
-/// to a structure or array, update \b pointer Varnode, \b baseOffset, and \b ptrType to this.
+void RuleSplitFlow::getOpList(vector<uint4> &oplist) const
+
+{
+  oplist.push_back(CPUI_SUBPIECE);
+}
+
+int4 RuleSplitFlow::applyOp(PcodeOp *op,Funcdata &data)
+
+{
+  int4 loSize = (int4)op->getIn(1)->getOffset();
+  if (loSize == 0)			// Make sure SUBPIECE doesn't take least significant part
+    return 0;
+  Varnode *vn = op->getIn(0);
+  if (!vn->isWritten())
+    return 0;
+  if (vn->isPrecisLo() || vn->isPrecisHi())
+    return 0;
+  if (op->getOut()->getSize() + loSize != vn->getSize())
+    return 0;				// Make sure SUBPIECE is taking most significant part
+  PcodeOp *concatOp = (PcodeOp *)0;
+  PcodeOp *multiOp = vn->getDef();
+  while(multiOp->code() == CPUI_INDIRECT) {	// PIECE may come through INDIRECT
+    Varnode *tmpvn = multiOp->getIn(0);
+    if (!tmpvn->isWritten()) return 0;
+    multiOp = tmpvn->getDef();
+  }
+  if (multiOp->code() == CPUI_PIECE) {
+    if (vn->getDef() != multiOp)
+      concatOp = multiOp;
+  }
+  else if (multiOp->code() == CPUI_MULTIEQUAL) {	// Otherwise PIECE comes through MULTIEQUAL
+    for(int4 i=0;i<multiOp->numInput();++i) {
+      Varnode *invn = multiOp->getIn(i);
+      if (!invn->isWritten()) continue;
+      PcodeOp *tmpOp = invn->getDef();
+      if (tmpOp->code() == CPUI_PIECE) {
+	concatOp = tmpOp;
+	break;
+      }
+    }
+  }
+  if (concatOp == (PcodeOp *)0)			// Didn't find the concatenate
+    return 0;
+  if (concatOp->getIn(1)->getSize() != loSize)
+    return 0;
+  SplitFlow splitFlow(&data,vn,loSize);
+  if (!splitFlow.doTrace()) return 0;
+  splitFlow.apply();
+  return 1;
+}
+
+/// If \b pointer Varnode is written by a COPY, INT_ADD, PTRSUB, or PTRADD from another pointer to a
+///   - structure
+///   - array OR
+///   - to an implied array with the given base type
+///
+/// then update \b pointer Varnode, \b baseOffset, and \b ptrType to this.
+/// \param impliedBase if non-null is the allowed element data-type for an implied array
 /// \return \b true if \b pointer was successfully updated
 bool SplitDatatype::RootPointer::backUpPointer(Datatype *impliedBase)
 
 {
   if (!pointer->isWritten())
     return false;
+  int4 off;
   PcodeOp *addOp = pointer->getDef();
   OpCode opc = addOp->code();
-  if (opc != CPUI_PTRSUB && opc != CPUI_INT_ADD && opc != CPUI_PTRADD)
+  if (opc == CPUI_PTRSUB || opc == CPUI_INT_ADD || opc == CPUI_PTRADD) {
+    Varnode *cvn = addOp->getIn(1);
+    if (!cvn->isConstant())
+      return false;
+    off = (int4)cvn->getOffset();
+  }
+  else if (opc == CPUI_COPY)
+    off = 0;
+  else {
     return false;
-  Varnode *cvn = addOp->getIn(1);
-  if (!cvn->isConstant())
-    return false;
+  }
   Varnode *tmpPointer = addOp->getIn(0);
   Datatype *ct = tmpPointer->getTypeReadFacing(addOp);
   if (ct->getMetatype() != TYPE_PTR)
@@ -1819,11 +2101,10 @@ bool SplitDatatype::RootPointer::backUpPointer(Datatype *impliedBase)
   Datatype *parent = ((TypePointer *)ct)->getPtrTo();
   type_metatype meta = parent->getMetatype();
   if (meta != TYPE_STRUCT && meta != TYPE_ARRAY) {
-    if (opc != CPUI_PTRADD || parent != impliedBase)
+    if ((opc != CPUI_PTRADD && opc != CPUI_COPY) || parent != impliedBase)
       return false;
   }
   ptrType = (TypePointer *)ct;
-  int4 off = (int4)cvn->getOffset();
   if (opc == CPUI_PTRADD)
     off *= (int4)addOp->getIn(2)->getOffset();
   off = AddrSpace::addressToByteInt(off, ptrType->getWordSize());
@@ -1832,10 +2113,11 @@ bool SplitDatatype::RootPointer::backUpPointer(Datatype *impliedBase)
   return true;
 }
 
-/// The LOAD or STORE pointer Varnode is examined. If it is a pointer to the given data-type, the
-/// root \b pointer is returned.  If not, we try to recursively walk back through either PTRSUB or INT_ADD instructions,
-/// until a pointer Varnode matching the data-type is found.  Any accumulated offset, relative to the original
-/// LOAD or STORE pointer is recorded in the \b baseOffset.  If a matching pointer is not found, \b false is returned.
+/// We search for a pointer to the specified data-type starting with the LOAD/STORE. If we don't immediately
+/// find it, we back up one level (through a PTRSUB, PTRADD, or INT_ADD). If it isn't found after 1 hop,
+/// \b false is returned.  Once this pointer is found, we back up through any single path of nested TYPE_STRUCT
+/// and TYPE_ARRAY offsets to establish the final root \b pointer, and \b true is returned. Any accumulated offset,
+/// relative to the original LOAD or STORE pointer is recorded in the \b baseOffset.
 /// \param op is the LOAD or STORE
 /// \param valueType is the specific data-type to match
 /// \return \b true if the root pointer is found
@@ -1843,11 +2125,11 @@ bool SplitDatatype::RootPointer::find(PcodeOp *op,Datatype *valueType)
 
 {
   Datatype *impliedBase = (Datatype *)0;
-  if (valueType->getMetatype() == TYPE_PARTIALSTRUCT)
+  if (valueType->getMetatype() == TYPE_PARTIALSTRUCT)		// Strip off partial to get containing struct or array
     valueType = ((TypePartialStruct *)valueType)->getParent();
-  else if (valueType->getMetatype() == TYPE_ARRAY) {
+  if (valueType->getMetatype() == TYPE_ARRAY) {		// If the data-type is an array
     valueType = ((TypeArray *)valueType)->getBase();
-    impliedBase = valueType;
+    impliedBase = valueType;				// we allow an implied array (pointer to element) as a match
   }
   loadStore = op;
   baseOffset = 0;
@@ -1864,12 +2146,26 @@ bool SplitDatatype::RootPointer::find(PcodeOp *op,Datatype *valueType)
     if (ptrType->getPtrTo() != valueType)
       return false;
   }
+  // The required pointer is found.  We try to back up to pointers to containing structures or arrays
   for(int4 i=0;i<3;++i) {
     if (pointer->isAddrTied() || pointer->loneDescend() == (PcodeOp *)0) break;
     if (!backUpPointer(impliedBase))
       break;
   }
   return true;
+}
+
+/// Add a COPY op from the \b pointer Varnode to temporary register and make it the new root \b pointer.
+/// This guarantees that the \b pointer Varnode will not be modified by subsequent STOREs and
+/// can be implicit in the expressions.
+/// \param data is the containing function
+/// \param followOp is the point where the COPY should be inserted
+void SplitDatatype::RootPointer::duplicateToTemp(Funcdata &data,PcodeOp *followOp)
+
+{
+  Varnode *newRoot = data.buildCopyTemp(pointer, followOp);
+  newRoot->updateType(ptrType);
+  pointer = newRoot;
 }
 
 /// If the pointer Varnode is no longer used, recursively check and remove the op producing it,
@@ -1920,8 +2216,9 @@ Datatype *SplitDatatype::getComponent(Datatype *ct,int4 offset,bool &isHole)
 
 /// For the given data-type, taking into account configuration options, return:
 ///   - -1 for not splittable
-///   - 0 for data-type that needs to be split
-///   - 1 for data-type that can be split multiple ways
+///   - 0 for struct based data-type that needs to be split
+///   - 1 for array based data-type that needs to be split
+///   - 2 for primitive data-type that can be split multiple ways
 /// \param ct is the given data-type
 /// \return the categorization
 int4 SplitDatatype::categorizeDatatype(Datatype *ct)
@@ -1933,18 +2230,18 @@ int4 SplitDatatype::categorizeDatatype(Datatype *ct)
       if (!splitArrays) break;
       subType = ((TypeArray *)ct)->getBase();
       if (subType->getMetatype() != TYPE_UNKNOWN || subType->getSize() != 1)
-	return 0;
+	return 1;
       else
-	return 1;	// unknown1 array does not need splitting and acts as (large) primitive
+	return 2;	// unknown1 array does not need splitting and acts as (large) primitive
     case TYPE_PARTIALSTRUCT:
       subType = ((TypePartialStruct *)ct)->getParent();
       if (subType->getMetatype() == TYPE_ARRAY) {
 	if (!splitArrays) break;
 	subType = ((TypeArray *)subType)->getBase();
 	if (subType->getMetatype() != TYPE_UNKNOWN || subType->getSize() != 1)
-	  return 0;
+	  return 1;
 	else
-	  return 1;	// unknown1 array does not need splitting and acts as (large) primitive
+	  return 2;	// unknown1 array does not need splitting and acts as (large) primitive
       }
       else if (subType->getMetatype() == TYPE_STRUCT) {
 	if (!splitStructures) break;
@@ -1959,7 +2256,7 @@ int4 SplitDatatype::categorizeDatatype(Datatype *ct)
     case TYPE_INT:
     case TYPE_UINT:
     case TYPE_UNKNOWN:
-      return 1;
+      return 2;
     default:
       break;
   }
@@ -1985,22 +2282,21 @@ bool SplitDatatype::testDatatypeCompatibility(Datatype *inBase,Datatype *outBase
   int4 outCategory = categorizeDatatype(outBase);
   if (outCategory < 0)
     return false;
-  if (outCategory != 0 && inCategory != 0)
+  if (outCategory == 2 && inCategory == 2)
     return false;
   if (!inConstant && inBase == outBase && inBase->getMetatype() == TYPE_STRUCT)
     return false;	// Don't split a whole structure unless it is getting initialized from a constant
-  if (isLoadStore && outCategory == 1 && inBase->getMetatype() == TYPE_ARRAY)
+  if (isLoadStore && outCategory == 2 && inCategory == 1)
     return false;	// Don't split array pointer writing into primitive
-  if (isLoadStore && inCategory == 1 && !inConstant && outBase->getMetatype() == TYPE_ARRAY)
+  if (isLoadStore && inCategory == 2 && !inConstant && outCategory == 1)
     return false;	// Don't split primitive into an array pointer, TODO: We could check if primitive is defined by PIECE
-  if (isLoadStore && inCategory == 0 && outCategory == 0 && !inConstant &&
-      inBase->getMetatype() == TYPE_ARRAY && outBase->getMetatype() == TYPE_ARRAY)
+  if (isLoadStore && inCategory == 1 && outCategory == 1 && !inConstant)
     return false;	// Don't split copies between arrays
   bool inHole;
   bool outHole;
   int4 curOff = 0;
   int4 sizeLeft = inBase->getSize();
-  if (inCategory == 1) {
+  if (inCategory == 2) {		// If input is primitive
     while(sizeLeft > 0) {
       Datatype *curOut = getComponent(outBase,curOff,outHole);
       if (curOut == (Datatype *)0) return false;
@@ -2017,7 +2313,7 @@ bool SplitDatatype::testDatatypeCompatibility(Datatype *inBase,Datatype *outBase
       }
     }
   }
-  else if (outCategory == 1) {
+  else if (outCategory == 2) {		// If output is primitive
     while(sizeLeft > 0) {
       Datatype *curIn = getComponent(inBase,curOff,inHole);
       if (curIn == (Datatype *)0) return false;
@@ -2142,7 +2438,7 @@ bool SplitDatatype::generateConstants(Varnode *vn,vector<Varnode *> &inVarnodes)
     val &= calc_mask(dt->getSize());
     Varnode *outVn = data.newConstant(dt->getSize(), val);
     inVarnodes.push_back(outVn);
-    outVn->updateType(dt, false, false);
+    outVn->updateType(dt);
   }
   data.opDestroy(op);
   return true;
@@ -2167,7 +2463,7 @@ void SplitDatatype::buildInConstants(Varnode *rootVn,vector<Varnode *> &inVarnod
     uintb val = (baseVal >> (8*off)) & calc_mask(dt->getSize());
     Varnode *outVn = data.newConstant(dt->getSize(), val);
     inVarnodes.push_back(outVn);
-    outVn->updateType(dt, false, false);
+    outVn->updateType(dt);
   }
 }
 
@@ -2197,7 +2493,7 @@ void SplitDatatype::buildInSubpieces(Varnode *rootVn,PcodeOp *followOp,vector<Va
     data.opSetInput(subpiece,data.newConstant(4, off), 1);
     Varnode *outVn = data.newVarnodeOut(dt->getSize(), addr, subpiece);
     inVarnodes.push_back(outVn);
-    outVn->updateType(dt, false, false);
+    outVn->updateType(dt);
     data.opInsertBefore(subpiece, followOp);
   }
 }
@@ -2335,7 +2631,7 @@ void SplitDatatype::buildPointers(Varnode *rootVn,TypePointer *ptrType,int4 base
 	data.opSetInput(newOp, indexVn, 1);
 	data.opSetInput(newOp, data.newConstant(inPtr->getSize(), sz), 2);
 	Datatype *indexType = types->getBase(indexVn->getSize(),TYPE_INT);
-	indexVn->updateType(indexType, false, false);
+	indexVn->updateType(indexType);
       }
       else {
 	int8 finalOffset = AddrSpace::byteToAddressInt(curOff - newOff,ptrType->getWordSize());
@@ -2346,7 +2642,7 @@ void SplitDatatype::buildPointers(Varnode *rootVn,TypePointer *ptrType,int4 base
       }
       inPtr = data.newUniqueOut(inPtr->getSize(), newOp);
       Datatype *tmpPtr = types->getTypePointerStripArray(ptrType->getSize(), newType, ptrType->getWordSize());
-      inPtr->updateType(tmpPtr, false, false);
+      inPtr->updateType(tmpPtr);
       data.opInsertBefore(newOp, followOp);
       tmpType = newType;
       curOff = newOff;
@@ -2546,7 +2842,7 @@ bool SplitDatatype::splitStore(PcodeOp *storeOp,Datatype *outType)
       data.opSetInput(newLoadOp,loadPtrs[i],1);
       Datatype *dt = dataTypePieces[i].inType;
       Varnode *vn = data.newUniqueOut(dt->getSize(), newLoadOp);
-      vn->updateType(dt, false, false);
+      vn->updateType(dt);
       inVarnodes.push_back(vn);
       data.opInsertBefore(newLoadOp, loadOp);
     }
@@ -2555,6 +2851,8 @@ bool SplitDatatype::splitStore(PcodeOp *storeOp,Datatype *outType)
     buildInSubpieces(inVn,storeOp,inVarnodes);
 
   vector<Varnode *> storePtrs;
+  if (storeRoot.pointer->isAddrTied())
+    storeRoot.duplicateToTemp(data, storeOp);
   buildPointers(storeRoot.pointer, storeRoot.ptrType, storeRoot.baseOffset, storeOp, storePtrs, false);
   // Preserve original STORE object, so that INDIRECT references are still valid
   // but convert it into the first of the smaller STOREs
@@ -2600,8 +2898,7 @@ Datatype *SplitDatatype::getValueDatatype(PcodeOp *loadStore,int4 size,TypeFacto
   if (ptrType->isPointerRel()) {
     TypePointerRel *ptrRel = (TypePointerRel *)ptrType;
     resType = ptrRel->getParent();
-    baseOffset = ptrRel->getPointerOffset();
-    baseOffset = AddrSpace::addressToByteInt(baseOffset, ptrRel->getWordSize());
+    baseOffset = ptrRel->getByteOffset();
   }
   else {
     resType = ((TypePointer *)ptrType)->getPtrTo();
@@ -2619,6 +2916,71 @@ Datatype *SplitDatatype::getValueDatatype(PcodeOp *loadStore,int4 size,TypeFacto
   else if (metain == TYPE_STRUCT || metain == TYPE_ARRAY)
     return tlst->getExactPiece(resType, baseOffset, size);
   return (Datatype *)0;
+}
+
+void RuleSplitCopy::getOpList(vector<uint4> &oplist) const
+
+{
+  oplist.push_back(CPUI_COPY);
+}
+
+int4 RuleSplitCopy::applyOp(PcodeOp *op,Funcdata &data)
+
+{
+  Datatype *inType = op->getIn(0)->getTypeReadFacing(op);
+  Datatype *outType = op->getOut()->getTypeDefFacing();
+  type_metatype metain = inType->getMetatype();
+  type_metatype metaout = outType->getMetatype();
+  if (metain != TYPE_PARTIALSTRUCT && metaout != TYPE_PARTIALSTRUCT &&
+      metain != TYPE_ARRAY && metaout != TYPE_ARRAY &&
+      metain != TYPE_STRUCT && metaout != TYPE_STRUCT)
+    return false;
+  SplitDatatype splitter(data);
+  if (splitter.splitCopy(op, inType, outType))
+    return 1;
+  return 0;
+}
+
+void RuleSplitLoad::getOpList(vector<uint4> &oplist) const
+
+{
+  oplist.push_back(CPUI_LOAD);
+}
+
+int4 RuleSplitLoad::applyOp(PcodeOp *op,Funcdata &data)
+
+{
+  Datatype *inType = SplitDatatype::getValueDatatype(op, op->getOut()->getSize(), data.getArch()->types);
+  if (inType == (Datatype *)0)
+    return 0;
+  type_metatype metain = inType->getMetatype();
+  if (metain != TYPE_STRUCT && metain != TYPE_ARRAY && metain != TYPE_PARTIALSTRUCT)
+    return 0;
+  SplitDatatype splitter(data);
+  if (splitter.splitLoad(op, inType))
+    return 1;
+  return 0;
+}
+
+void RuleSplitStore::getOpList(vector<uint4> &oplist) const
+
+{
+  oplist.push_back(CPUI_STORE);
+}
+
+int4 RuleSplitStore::applyOp(PcodeOp *op,Funcdata &data)
+
+{
+  Datatype *outType = SplitDatatype::getValueDatatype(op, op->getIn(2)->getSize(), data.getArch()->types);
+  if (outType == (Datatype *)0)
+    return 0;
+  type_metatype metain = outType->getMetatype();
+  if (metain != TYPE_STRUCT && metain != TYPE_ARRAY && metain != TYPE_PARTIALSTRUCT)
+    return 0;
+  SplitDatatype splitter(data);
+  if (splitter.splitStore(op, outType))
+    return 1;
+  return 0;
 }
 
 /// This method distinguishes between a floating-point variable with \e full precision, where all the
@@ -2795,7 +3157,7 @@ TransformVar *SubfloatFlow::setReplacement(Varnode *vn)
 
 /// \brief Try to trace logical variable through descendant Varnodes
 ///
-/// Given a Varnode placeholder, look at all descendent PcodeOps and create
+/// Given a Varnode placeholder, look at all descendant PcodeOps and create
 /// placeholders for the op and its output Varnode.  If appropriate add the
 /// output placeholder to the worklist.
 /// \param rvn is the given Varnode placeholder
@@ -3032,6 +3394,32 @@ bool SubfloatFlow::doTrace(void)
   if (!retval) return false;
   if (terminatorCount == 0) return false;	// Must see at least 1 terminator
   return true;
+}
+
+void RuleSubfloatConvert::getOpList(vector<uint4> &oplist) const
+
+{
+  oplist.push_back(CPUI_FLOAT_FLOAT2FLOAT);
+}
+
+int4 RuleSubfloatConvert::applyOp(PcodeOp *op,Funcdata &data)
+
+{
+  Varnode *invn = op->getIn(0);
+  Varnode *outvn = op->getOut();
+  int4 insize = invn->getSize();
+  int4 outsize = outvn->getSize();
+  if (outsize > insize) {
+    SubfloatFlow subflow(&data,outvn,insize);
+    if (!subflow.doTrace()) return 0;
+    subflow.apply();
+  }
+  else {
+    SubfloatFlow subflow(&data,invn,outsize);
+    if (!subflow.doTrace()) return 0;
+    subflow.apply();
+  }
+  return 1;
 }
 
 /// \brief Find or build the placeholder objects for a Varnode that needs to be split into lanes

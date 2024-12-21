@@ -18,13 +18,13 @@ package ghidra.features.bsim.query;
 import java.net.URL;
 import java.sql.Connection;
 import java.sql.SQLException;
+import java.util.Collection;
 import java.util.HashMap;
 
 import javax.security.auth.callback.NameCallback;
 import javax.security.auth.callback.PasswordCallback;
 
 import org.apache.commons.dbcp2.BasicDataSource;
-import org.apache.commons.lang3.StringUtils;
 
 import ghidra.features.bsim.query.BSimServerInfo.DBType;
 import ghidra.features.bsim.query.FunctionDatabase.ConnectionType;
@@ -40,12 +40,14 @@ public class BSimPostgresDBConnectionManager {
 	private static final int CONN_POOL_MAX_IDLE = 2;
 
 	private static HashMap<BSimServerInfo, BSimPostgresDataSource> dataSourceMap = new HashMap<>();
+	private static boolean shutdownHookInstalled = false;
 
 	public static synchronized BSimPostgresDataSource getDataSource(
 			BSimServerInfo postgresServerInfo) {
 		if (postgresServerInfo.getDBType() != DBType.postgres) {
 			throw new IllegalArgumentException("expected postgres server info");
 		}
+		enableShutdownHook();
 		return dataSourceMap.computeIfAbsent(postgresServerInfo,
 			info -> new BSimPostgresDataSource(info));
 	}
@@ -73,6 +75,30 @@ public class BSimPostgresDBConnectionManager {
 		}
 		ds.close();
 		dataSourceMap.remove(serverInfo);
+	}
+
+	private static synchronized void enableShutdownHook() {
+		if (shutdownHookInstalled) {
+			return;
+		}
+		Runtime.getRuntime().addShutdownHook(new Thread() {
+			@Override
+			public void run() {
+				Collection<BSimPostgresDataSource> dataSources = dataSourceMap.values();
+				for (BSimPostgresDataSource ds : dataSources) {
+					int activeConnections = ds.getActiveConnections();
+					if (activeConnections != 0) {
+						Msg.error(BSimPostgresDBConnectionManager.class,
+							activeConnections +
+								" BSim active Postgres connections were not properly closed: " +
+								ds.serverInfo);
+					}
+					ds.close();
+				}
+				dataSourceMap.clear();
+			}
+		});
+		shutdownHookInstalled = true;
 	}
 
 	public static class BSimPostgresDataSource implements BSimJDBCDataSource { // NOTE: can be renamed
@@ -256,10 +282,12 @@ public class BSimPostgresDBConnectionManager {
 		 */
 		private Connection connect() throws SQLException, CancelledException {
 
-			String userName = bds.getUsername();
-			bds.setUsername(StringUtils.isBlank(userName) ? ClientUtil.getUserName() : userName);
-			bds.setPassword(null);
-			connectionType = ConnectionType.SSL_No_Authentication;
+			String loginError = null;
+
+			serverInfo.setUserInfo(bds);
+
+			connectionType = serverInfo.hasPassword() ? ConnectionType.SSL_Password_Authentication
+					: ConnectionType.SSL_No_Authentication;
 			try {
 				// Specify SSL connection properties
 				setSSLProperties();
@@ -272,6 +300,10 @@ public class BSimPostgresDBConnectionManager {
 				if (e.getMessage().contains("password-based authentication") ||
 					e.getMessage().contains("SCRAM-based") ||
 					e.getMessage().contains("password authentication failed")) {
+					if (serverInfo.hasPassword()) {
+						loginError = "Access denied: " + serverInfo;
+						Msg.error(this, loginError);
+					}
 					// Use Ghidra's authentication infrastructure
 					connectionType = ConnectionType.SSL_Password_Authentication; // Try again with a password
 					// fallthru to second attempt at getConnection
@@ -292,7 +324,6 @@ public class BSimPostgresDBConnectionManager {
 					" idle=" + bds.getNumIdle());
 			}
 
-			String loginError = null;
 			while (true) {
 				ClientAuthenticator clientAuthenticator = null;
 				if (connectionType == ConnectionType.SSL_Password_Authentication) {
@@ -300,9 +331,11 @@ public class BSimPostgresDBConnectionManager {
 					if (clientAuthenticator == null) { // Make sure authenticator is registered
 						throw new SQLException("No registered authenticator");
 					}
-					NameCallback nameCb = new NameCallback("User ID:");
-					nameCb.setName(bds.getUsername());
-					PasswordCallback passCb = new PasswordCallback("Password:", false);
+					NameCallback nameCb = new NameCallback("User ID:", bds.getUsername());
+					if (!serverInfo.hasDefaultLogin()) {
+						nameCb.setName(bds.getUsername());
+					}
+					PasswordCallback passCb = new PasswordCallback(" ", false); // force use of default prompting
 					try {
 						if (!clientAuthenticator.processPasswordCallbacks(
 							"BSim Database Authentication", "BSim Database Server",
@@ -311,9 +344,8 @@ public class BSimPostgresDBConnectionManager {
 						}
 						bds.setPassword(new String(passCb.getPassword()));
 						// User may have specified new username, or this may return NULL
-						userName = nameCb.getName();
-						if (!StringUtils.isBlank(userName)) {
-							bds.setUsername(userName);
+						if (serverInfo.hasDefaultLogin()) {
+							bds.setUsername(nameCb.getName());
 						}
 					}
 					finally {

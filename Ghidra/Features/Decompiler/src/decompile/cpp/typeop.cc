@@ -175,6 +175,58 @@ OpCode TypeOp::floatSignManipulation(PcodeOp *op)
   return CPUI_MAX;
 }
 
+/// \brief Propagate a dereferenced data-type up to its pointer data-type through a LOAD or STORE
+///
+/// Don't create more than a depth of 1, i.e. ptr->ptr
+/// \param t is the TypeFactory containing the data-types
+/// \param dt is the pointed-to data-type
+/// \param sz is the size of the pointer
+/// \param wordsz is the wordsize associated with the pointer
+/// \return the TypePointer object
+Datatype *TypeOp::propagateToPointer(TypeFactory *t,Datatype *dt,int4 sz,int4 wordsz)
+
+{
+  type_metatype meta = dt->getMetatype();
+  if (meta==TYPE_PTR) {
+    // Make sure that at least we return a pointer to something the size of -pt-
+    dt = t->getBase(dt->getSize(),TYPE_UNKNOWN);		// Pass back unknown *
+  }
+  else if (meta == TYPE_PARTIALSTRUCT) {
+    dt = ((TypePartialStruct *)dt)->getComponentForPtr();
+  }
+  return t->getTypePointer(sz,dt,wordsz);
+}
+
+/// \brief Propagate a pointer data-type down to its element data-type through a LOAD or STORE
+///
+/// \param t is the TypeFactory containing the data-types
+/// \param dt is the pointer data-type
+/// \param sz is the size of the dereferenced pointer
+/// \return the dereferenced data-type
+Datatype *TypeOp::propagateFromPointer(TypeFactory *t,Datatype *dt,int4 sz)
+
+{
+  if (dt->getMetatype() != TYPE_PTR)
+    return (Datatype *)0;
+  Datatype *ptrto = ((TypePointer *)dt)->getPtrTo();
+  if (ptrto->isVariableLength())
+    return (Datatype *)0;
+  if (ptrto->getSize() == sz)
+    return ptrto;
+  // If we reach here, there is a size mismatch between the pointer data-type and the dereferenced value.
+  // We only propagate (partial) enumerations in this case.
+  if (dt->isPointerRel()) {
+    TypePointerRel *ptrrel = (TypePointerRel *)dt;
+    Datatype *res = t->getExactPiece(ptrrel->getParent(), ptrrel->getByteOffset(), sz);
+    if (res != (Datatype *)0 && res->isEnumType())
+      return res;
+  }
+  else if (ptrto->isEnumType() && !ptrto->hasStripped()) {
+    return t->getTypePartialEnum((TypeEnum *)ptrto, 0, sz);
+  }
+  return (Datatype *)0;
+}
+
 /// \param t is the TypeFactory used to construct data-types
 /// \param opc is the op-code value the new object will represent
 /// \param n is the display name that will represent the op-code
@@ -440,15 +492,10 @@ Datatype *TypeOpLoad::propagateType(Datatype *alttype,PcodeOp *op,Varnode *invn,
   Datatype *newtype;
   if (inslot == -1) {	 // Propagating output to input (value to ptr)
     AddrSpace *spc = op->getIn(0)->getSpaceFromConst();
-    newtype = tlst->getTypePointerNoDepth(outvn->getSize(),alttype,spc->getWordSize());
-  }
-  else if (alttype->getMetatype()==TYPE_PTR) {
-    newtype = ((TypePointer *)alttype)->getPtrTo();
-    if (newtype->getSize() != outvn->getSize() || newtype->isVariableLength()) // Size must be appropriate
-	newtype = (Datatype *)0;
+    newtype = propagateToPointer(tlst,alttype,outvn->getSize(),spc->getWordSize());
   }
   else
-    newtype = (Datatype *)0; // Don't propagate anything
+    newtype = propagateFromPointer(tlst, alttype, outvn->getSize());
   return newtype;
 }
 
@@ -515,15 +562,10 @@ Datatype *TypeOpStore::propagateType(Datatype *alttype,PcodeOp *op,Varnode *invn
   Datatype *newtype;
   if (inslot==2) {		// Propagating value to ptr
     AddrSpace *spc = op->getIn(0)->getSpaceFromConst();
-    newtype = tlst->getTypePointerNoDepth(outvn->getSize(),alttype,spc->getWordSize());
-  }
-  else if (alttype->getMetatype()==TYPE_PTR) {
-    newtype = ((TypePointer *)alttype)->getPtrTo();
-    if (newtype->getSize() != outvn->getSize() || newtype->isVariableLength())
-	newtype = (Datatype *)0;
+    newtype = propagateToPointer(tlst,alttype,outvn->getSize(),spc->getWordSize());
   }
   else
-    newtype = (Datatype *)0; // Don't propagate anything
+    newtype = propagateFromPointer(tlst, alttype, outvn->getSize());
   return newtype;
 }
 
@@ -912,7 +954,7 @@ Datatype *TypeOpEqual::propagateAcrossCompare(Datatype *alttype,TypeFactory *typ
   }
   else if (alttype->isPointerRel() && !outvn->isConstant()) {
     TypePointerRel *relPtr = (TypePointerRel *)alttype;
-    if (relPtr->getParent()->getMetatype() == TYPE_STRUCT && relPtr->getPointerOffset() >= 0) {
+    if (relPtr->getParent()->getMetatype() == TYPE_STRUCT && relPtr->getByteOffset() >= 0) {
 	// If we know the pointer is in the middle of a structure, don't propagate across comparison operators
 	// as the two sides of the operator are likely to be different types , and the other side can also
 	// get data-type information from the structure pointer
@@ -1273,7 +1315,7 @@ Datatype *TypeOpIntSub::getOutputToken(const PcodeOp *op,CastStrategy *castStrat
 TypeOpIntCarry::TypeOpIntCarry(TypeFactory *t)
   : TypeOpFunc(t,CPUI_INT_CARRY,"CARRY",TYPE_BOOL,TYPE_UINT)
 {
-  opflags = PcodeOp::binary | PcodeOp::commutative;
+  opflags = PcodeOp::binary | PcodeOp::commutative | PcodeOp::booloutput;
   addlflags = arithmetic_op;
   behave = new OpBehaviorIntCarry();
 }
@@ -1289,7 +1331,8 @@ string TypeOpIntCarry::getOperatorName(const PcodeOp *op) const
 TypeOpIntScarry::TypeOpIntScarry(TypeFactory *t)
   : TypeOpFunc(t,CPUI_INT_SCARRY,"SCARRY",TYPE_BOOL,TYPE_INT)
 {
-  opflags = PcodeOp::binary | PcodeOp::commutative;
+  opflags = PcodeOp::binary | PcodeOp::commutative | PcodeOp::booloutput;
+  addlflags = arithmetic_op;
   behave = new OpBehaviorIntScarry();
 }
 
@@ -1304,7 +1347,7 @@ string TypeOpIntScarry::getOperatorName(const PcodeOp *op) const
 TypeOpIntSborrow::TypeOpIntSborrow(TypeFactory *t)
   : TypeOpFunc(t,CPUI_INT_SBORROW,"SBORROW",TYPE_BOOL,TYPE_INT)
 {
-  opflags = PcodeOp::binary;
+  opflags = PcodeOp::binary | PcodeOp::booloutput;
   addlflags = arithmetic_op;
   behave = new OpBehaviorIntSborrow();
 }
@@ -1362,7 +1405,7 @@ Datatype *TypeOpIntXor::getOutputToken(const PcodeOp *op,CastStrategy *castStrat
 Datatype *TypeOpIntXor::propagateType(Datatype *alttype,PcodeOp *op,Varnode *invn,Varnode *outvn,
 				      int4 inslot,int4 outslot)
 {
-  if (!alttype->isPowerOfTwo()) {
+  if (!alttype->isEnumType()) {
     if (alttype->getMetatype() != TYPE_FLOAT)
       return (Datatype *)0;
     if (floatSignManipulation(op) == CPUI_MAX)
@@ -1395,7 +1438,7 @@ Datatype *TypeOpIntAnd::getOutputToken(const PcodeOp *op,CastStrategy *castStrat
 Datatype *TypeOpIntAnd::propagateType(Datatype *alttype,PcodeOp *op,Varnode *invn,Varnode *outvn,
 				      int4 inslot,int4 outslot)
 {
-  if (!alttype->isPowerOfTwo()) {
+  if (!alttype->isEnumType()) {
     if (alttype->getMetatype() != TYPE_FLOAT)
       return (Datatype *)0;
     if (floatSignManipulation(op) == CPUI_MAX)
@@ -1428,7 +1471,7 @@ Datatype *TypeOpIntOr::getOutputToken(const PcodeOp *op,CastStrategy *castStrate
 Datatype *TypeOpIntOr::propagateType(Datatype *alttype,PcodeOp *op,Varnode *invn,Varnode *outvn,
 				     int4 inslot,int4 outslot)
 {
-  if (!alttype->isPowerOfTwo()) return (Datatype *)0; // Only propagate flag enums
+  if (!alttype->isEnumType()) return (Datatype *)0; // Only propagate enums
   Datatype *newtype;
   if (invn->isSpacebase()) {
     AddrSpace *spc = tlst->getArch()->getDefaultDataSpace();

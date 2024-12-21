@@ -14,7 +14,6 @@
 # limitations under the License.
 ##
 import contextlib
-import ctypes
 import ctypes.util
 import html
 import importlib.metadata
@@ -28,24 +27,25 @@ import subprocess
 import sys
 import tempfile
 import threading
+from importlib.machinery import ModuleSpec
 from pathlib import Path
 from typing import List, NoReturn, Tuple, Union
 
 import jpype
 from jpype import imports, _jpype
-from importlib.machinery import ModuleSpec
+from packaging.version import Version
 
-from .javac import java_compile
-from .script import PyGhidraScript
-from .version import ApplicationInfo, ExtensionDetails, MINIMUM_GHIDRA_VERSION
+from pyghidra.javac import java_compile
+from pyghidra.script import PyGhidraScript
+from pyghidra.version import ApplicationInfo, ExtensionDetails, MINIMUM_GHIDRA_VERSION
 
 logger = logging.getLogger(__name__)
 
 
 @contextlib.contextmanager
 def _silence_java_output(stdout=True, stderr=True):
-    from java.io import OutputStream, PrintStream
-    from java.lang import System
+    from java.io import OutputStream, PrintStream # type:ignore @UnresolvedImport
+    from java.lang import System # type:ignore @UnresolvedImport
     out = System.out
     err = System.err
     null = PrintStream(OutputStream.nullOutputStream())
@@ -115,7 +115,7 @@ def _plugin_lock():
     """
     File lock for processing plugins
     """
-    from java.io import RandomAccessFile
+    from java.io import RandomAccessFile # type:ignore @UnresolvedImport
     path = Path(tempfile.gettempdir()) / "pyghidra_plugin_lock"
     try:
         # Python doesn't have a file lock except for unix systems
@@ -199,7 +199,7 @@ class PyGhidraLauncher:
             msg = "Cannot launch from repo because Ghidra has not been compiled " \
                   "with Eclipse or Gradle."
             self._report_fatal_error("Ghidra not built", msg, ValueError(msg))
-        
+
         self.class_path = [str(classpath)]
         if not self._java_home:
             self._launch_support = launch_support
@@ -215,20 +215,25 @@ class PyGhidraLauncher:
         raise Exception("org.eclipse.jdt.launching.VM_ARGUMENTS not found")
 
     def _jvm_args(self) -> List[str]:
+        
+        properties = [
+            f"-Dpyghidra.sys.prefix={sys.prefix}",
+            f"-Dpyghidra.sys.executable={sys.executable}"
+        ]
+        
         if self._dev_mode and self._java_home:
-            return self._parse_dev_args()
+            return properties + self._parse_dev_args()
 
         suffix = "_" + platform.system().upper()
         if suffix == "_DARWIN":
             suffix = "_MACOS"
         option_pattern: re.Pattern = re.compile(fr"VMARGS(?:{suffix})?=(.+)")
-        properties = []
 
         root = self._install_dir
-        
+
         if self._dev_mode:
             root = root / "Ghidra" / "RuntimeScripts" / "Common"
-        
+
         launch_properties = root / "support" / "launch.properties"
 
         for line in Path(launch_properties).read_text().splitlines():
@@ -349,7 +354,7 @@ class PyGhidraLauncher:
         Checks if the currently installed Ghidra version is supported.
         The launcher will report the problem and terminate if it is not supported.
         """
-        if self.app_info.version < MINIMUM_GHIDRA_VERSION:
+        if Version(self.app_info.version) < Version(MINIMUM_GHIDRA_VERSION):
             msg = f"Ghidra version {self.app_info.version} is not supported" + os.linesep + \
                   f"The minimum required version is {MINIMUM_GHIDRA_VERSION}"
             self._report_fatal_error("Unsupported Version", msg, ValueError(msg))
@@ -425,7 +430,7 @@ class PyGhidraLauncher:
         # Add extra class paths
         # Do this before installing plugins incase dependencies are needed
         if self.class_files:
-            from java.lang import ClassLoader
+            from java.lang import ClassLoader # type:ignore @UnresolvedImport
             gcl = ClassLoader.getSystemClassLoader()
             for path in self.class_files:
                 gcl.addPath(path)
@@ -445,7 +450,7 @@ class PyGhidraLauncher:
             self._layout = GhidraLauncher.initializeGhidraEnvironment()
 
         # import properties to register the property customizer
-        from . import properties as _
+        from pyghidra import properties as _  # @UnusedImport
 
         _load_entry_points("pyghidra.pre_launch")
 
@@ -648,7 +653,7 @@ class GuiPyGhidraLauncher(PyGhidraLauncher):
 
     @staticmethod
     def _get_thread(name: str):
-        from java.lang import Thread
+        from java.lang import Thread # type:ignore @UnresolvedImport
         for t in Thread.getAllStackTraces().keySet():
             if t.getName() == name:
                 return t
@@ -656,11 +661,11 @@ class GuiPyGhidraLauncher(PyGhidraLauncher):
 
     def _launch(self):
         from ghidra import Ghidra
-        from java.lang import Runtime, Thread
+        from java.lang import Runtime, Thread # type:ignore @UnresolvedImport
 
         if sys.platform == "win32":
             appid = ctypes.c_wchar_p(self.app_info.name)
-            ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(appid)
+            ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(appid) # @UndefinedVariable
 
         stdout = _PyGhidraStdOut(sys.stdout)
         stderr = _PyGhidraStdOut(sys.stderr)
@@ -677,15 +682,15 @@ def _run_mac_app():
     # this runs the event loop
     # it is required for the GUI to show up
     from ctypes import c_void_p, c_double, c_uint64, c_int64, c_int32, c_bool, CFUNCTYPE
-    
+
     CoreFoundation = ctypes.cdll.LoadLibrary(ctypes.util.find_library("CoreFoundation"))
-    
+
     def get_function(name, restype, *argtypes):
         res = getattr(CoreFoundation, name)
         res.argtypes = [arg for arg in argtypes]
         res.restype = restype
         return res
-    
+
     CFRunLoopTimerCallback = CFUNCTYPE(None, c_void_p, c_void_p)
     kCFRunLoopDefaultMode = c_void_p.in_dll(CoreFoundation, "kCFRunLoopDefaultMode")
     kCFRunLoopRunFinished = c_int32(1)
@@ -693,10 +698,10 @@ def _run_mac_app():
     INF_TIME = c_double(1.0e20)
     FIRE_ONCE = c_double(0)
     kCFAllocatorDefault = NULL
-    
+
     CFRunLoopGetCurrent = get_function("CFRunLoopGetCurrent", c_void_p)
     CFRelease = get_function("CFRelease", None, c_void_p)
-    
+
     CFRunLoopTimerCreate = get_function(
         "CFRunLoopTimerCreate",
         c_void_p,
@@ -708,19 +713,19 @@ def _run_mac_app():
         CFRunLoopTimerCallback,
         c_void_p
     )
-    
+
     CFRunLoopAddTimer = get_function("CFRunLoopAddTimer", None, c_void_p, c_void_p, c_void_p)
     CFRunLoopRunInMode = get_function("CFRunLoopRunInMode", c_int32, c_void_p, c_double, c_bool)
-    
+
     @CFRunLoopTimerCallback
     def dummy_timer(timer, info):
         # this doesn't need to do anything
         # CFRunLoopTimerCreate just needs a valid callback
         return
-    
+
     timer = CFRunLoopTimerCreate(kCFAllocatorDefault, INF_TIME, FIRE_ONCE, 0, 0, dummy_timer, NULL)
     CFRunLoopAddTimer(CFRunLoopGetCurrent(), timer, kCFRunLoopDefaultMode)
     CFRelease(timer)
-    
+
     while CFRunLoopRunInMode(kCFRunLoopDefaultMode, INF_TIME, False) != kCFRunLoopRunFinished:
         pass
