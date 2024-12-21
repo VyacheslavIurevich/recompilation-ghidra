@@ -137,7 +137,7 @@ public class CParser {
     private Stack<DataType> dataTypeStack = new Stack<DataType>();
 
     private StringBuilder parseMessages = new StringBuilder();
-	
+
     // true if parse was successful
     private boolean parseSuccess = false;
     
@@ -159,15 +159,14 @@ public class CParser {
     }
 
     public void setFilenames(String[] files) {
-		if (files == null || files.length < 1) {
-			return;
-		}
+        if (files == null || files.length < 1) {
+            return;
+        }
 
-		for (String file : files)
-		{
-			filenames.add(file);
-		}
-	}
+        for (String file : files) {
+            filenames.add(file);
+        }
+    }
 
     private CategoryPath getCurrentCategoryPath() {
         return getCategory(currentCategoryName);
@@ -188,16 +187,13 @@ public class CParser {
     }
 
     private String getFileName(String path) {
-		if (includePaths != null)
-		{
-			for (String includePath : includePaths)
-			{
-				if (path.startsWith(includePath))
-				{
-					return path.substring(includePath.length() + 1);
-				}
-			}
-		}
+        if (includePaths != null) {
+            for (String includePath : includePaths) {
+                if (path.startsWith(includePath)) {
+                    return path.substring(includePath.length() + 1);
+                }
+            }
+        }
 
         int slashpos = path.lastIndexOf('/');
         if (slashpos < 0) {
