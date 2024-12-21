@@ -369,11 +369,7 @@ public class CParserUtils {
 
 		File file = new File(dataFileName);
 		FileDataTypeManager dtMgr =
-			FileDataTypeManager.
-      
-      
-      
-      (file, languageId, compileSpecId);
+			FileDataTypeManager.createFileArchive(file, languageId, compileSpecId);
 		boolean success = false;
 		try {
 			CParseResults results =
